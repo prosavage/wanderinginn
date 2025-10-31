@@ -882,8 +882,9 @@
                     value={selectedFormat}
                     onChange={(e) => {
                       setSelectedFormat(e.target.value);
+                      setSelectedChapter(null); // Reset selected chapter when changing format
                       // Reset book selection when changing format
-                      if (e.target.value !== 'audiobook') {
+                      if (e.target.value !== 'audiobook' && e.target.value !== 'ebook') {
                         setSelectedBook(null);
                       }
                     }}
@@ -904,7 +905,10 @@
                   <div className="relative">
                     <select
                       value={selectedBook !== null ? selectedBook : ''}
-                      onChange={(e) => setSelectedBook(e.target.value === '' ? null : parseInt(e.target.value))}
+                      onChange={(e) => {
+                        setSelectedBook(e.target.value === '' ? null : parseInt(e.target.value));
+                        setSelectedChapter(null); // Reset selected chapter when changing book
+                      }}
                       className="h-full px-4 py-3 bg-slate-900/60 border border-slate-600 rounded-lg text-amber-100 focus:outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-500/50 cursor-pointer appearance-none pr-10"
                       style={{ minWidth: '180px' }}
                     >
@@ -914,6 +918,33 @@
                         const hasAudiobookChapters = chaptersData.chapters.some(ch => ch.b === idx && ch.ab !== null);
                         // Only show books that have audiobook chapters
                         if (!hasAudiobookChapters) return null;
+                        return <option key={idx} value={idx}>{book}</option>;
+                      })}
+                    </select>
+                    <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-amber-400">
+                      ▼
+                    </div>
+                  </div>
+                )}
+
+                {/* Book Dropdown (only for Ebook) */}
+                {selectedFormat === 'ebook' && chaptersData && (
+                  <div className="relative">
+                    <select
+                      value={selectedBook !== null ? selectedBook : ''}
+                      onChange={(e) => {
+                        setSelectedBook(e.target.value === '' ? null : parseInt(e.target.value));
+                        setSelectedChapter(null); // Reset selected chapter when changing book
+                      }}
+                      className="h-full px-4 py-3 bg-slate-900/60 border border-slate-600 rounded-lg text-amber-100 focus:outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-500/50 cursor-pointer appearance-none pr-10"
+                      style={{ minWidth: '180px' }}
+                    >
+                      <option value="">All Books</option>
+                      {chaptersData.books.map((book, idx) => {
+                        // Check if this book has any ebook chapters
+                        const hasEbookChapters = chaptersData.chapters.some(ch => ch.b === idx && ch.eb !== null);
+                        // Only show books that have ebook chapters
+                        if (!hasEbookChapters) return null;
                         return <option key={idx} value={idx}>{book}</option>;
                       })}
                     </select>
@@ -937,48 +968,85 @@
               </div>
 
               {/* Search Results */}
-              {searchTerm && (
+              {(searchTerm || ((selectedFormat === 'audiobook' || selectedFormat === 'ebook') && selectedBook !== null)) && (
                 <div className="mt-4 max-h-64 overflow-y-auto space-y-2">
-                  {filteredChapters.length > 0 ? (
-                    filteredChapters.map((chapter, idx) => {
-                      const formatKey = selectedFormat === 'webSerial' ? 'ws' : selectedFormat === 'audiobook' ? 'ab' : 'eb';
-                      const title = chapter[formatKey];
+                  {/* "I finished it" option for audiobook/ebook with book selected */}
+                  {(selectedFormat === 'audiobook' || selectedFormat === 'ebook') && selectedBook !== null && !selectedChapter && (() => {
+                    const formatKey = selectedFormat === 'audiobook' ? 'ab' : 'eb';
+                    // Find the last chapter in this book for the selected format
+                    const bookChapters = chaptersData.chapters
+                      .map((chapter, index) => ({ ...chapter, originalIndex: index }))
+                      .filter(chapter => chapter.b === selectedBook && chapter[formatKey] !== null);
 
-                      // Skip if this chapter doesn't have the selected format
-                      if (!title) return null;
+                    if (bookChapters.length === 0) return null;
 
-                      return (
-                        <button
-                          key={idx}
-                          onClick={() => {
-                            setSelectedChapter(chapter);
-                            setSearchTerm('');
-                          }}
-                          className="w-full text-left px-4 py-3 bg-slate-900/60 hover:bg-slate-700/60 border border-slate-700 hover:border-amber-500 rounded-lg transition-all"
-                        >
-                          <div className="flex items-center justify-between">
-                            <div className="flex-1">
-                              <p className="text-amber-200 font-semibold">{title}</p>
-                              <p className="text-xs text-slate-400">
-                                {chaptersData.volumes[chapter.v] || `Volume ${chapter.v + 1}`}
-                                {(() => {
-                                  const currentBookIndex = chapter.b;
-                                  // Check if this book number has ANY audiobook chapters
-                                  const bookHasAudiobook = chaptersData.chapters.some(ch => ch.b === currentBookIndex && ch.ab !== null);
-                                  if (bookHasAudiobook) {
-                                    return ` • ${chaptersData.books[currentBookIndex] || `Book ${currentBookIndex + 1}`}`;
-                                  }
-                                  return '';
-                                })()}
-                              </p>
-                            </div>
-                            <span className="text-xl">📜</span>
+                    const lastChapter = bookChapters[bookChapters.length - 1];
+                    const bookName = chaptersData.books[selectedBook];
+
+                    return (
+                      <button
+                        onClick={() => {
+                          setSelectedChapter(lastChapter);
+                          setSearchTerm('');
+                        }}
+                        className="w-full text-left px-4 py-3 bg-slate-900/60 hover:bg-slate-700/60 border border-slate-700 hover:border-amber-500 rounded-lg transition-all"
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex-1">
+                            <p className="text-amber-200 font-semibold">I finished it!</p>
+                            <p className="text-xs text-slate-400 mt-1">
+                              Jump to the last chapter of {bookName}
+                            </p>
                           </div>
-                        </button>
-                      );
-                    })
-                  ) : (
-                    <p className="text-center text-slate-400 py-4">Hmm, couldn't find "{searchTerm}". Try a different chapter number?</p>
+                          <span className="text-xl">🎉</span>
+                        </div>
+                      </button>
+                    );
+                  })()}
+
+                  {/* Regular search results */}
+                  {searchTerm && (
+                    filteredChapters.length > 0 ? (
+                      filteredChapters.map((chapter, idx) => {
+                        const formatKey = selectedFormat === 'webSerial' ? 'ws' : selectedFormat === 'audiobook' ? 'ab' : 'eb';
+                        const title = chapter[formatKey];
+
+                        // Skip if this chapter doesn't have the selected format
+                        if (!title) return null;
+
+                        return (
+                          <button
+                            key={idx}
+                            onClick={() => {
+                              setSelectedChapter(chapter);
+                              setSearchTerm('');
+                            }}
+                            className="w-full text-left px-4 py-3 bg-slate-900/60 hover:bg-slate-700/60 border border-slate-700 hover:border-amber-500 rounded-lg transition-all"
+                          >
+                            <div className="flex items-center justify-between">
+                              <div className="flex-1">
+                                <p className="text-amber-200 font-semibold">{title}</p>
+                                <p className="text-xs text-slate-400">
+                                  {chaptersData.volumes[chapter.v] || `Volume ${chapter.v + 1}`}
+                                  {(() => {
+                                    const currentBookIndex = chapter.b;
+                                    // Check if this book number has ANY audiobook chapters
+                                    const bookHasAudiobook = chaptersData.chapters.some(ch => ch.b === currentBookIndex && ch.ab !== null);
+                                    if (bookHasAudiobook) {
+                                      return ` • ${chaptersData.books[currentBookIndex] || `Book ${currentBookIndex + 1}`}`;
+                                    }
+                                    return '';
+                                  })()}
+                                </p>
+                              </div>
+                              <span className="text-xl">📜</span>
+                            </div>
+                          </button>
+                        );
+                      })
+                    ) : (
+                      <p className="text-center text-slate-400 py-4">Hmm, couldn't find "{searchTerm}". Try a different chapter number?</p>
+                    )
                   )}
                 </div>
               )}
