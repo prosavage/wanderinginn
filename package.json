@@ -1,0 +1,23 @@
+{
+  "name": "wandering-inn-tracker",
+  "version": "1.0.0",
+  "description": "Progress tracker for The Wandering Inn web serial",
+  "main": "index.html",
+  "scripts": {
+    "update": "node update-data.js"
+  },
+  "keywords": [
+    "wandering-inn",
+    "reading-tracker",
+    "progress-tracker",
+    "web-serial"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "jsdom": "^24.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -1,0 +1,1487 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>The Wandering Inn - Progress Tracker</title>
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- React & ReactDOM -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+
+  <!-- Babel Standalone for JSX -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useMemo, useEffect } = React;
+
+    const WanderingInnTracker = () => {
+      const TOC_URL = 'https://wanderinginn.com/table-of-contents/?compare=audio,ebook';
+      const WORDCOUNT_URL = './wandering-inn-wordcount.json';
+      const CHAPTERS_URL = './wandering-inn-chapters.json';
+
+      const [loadingState, setLoadingState] = useState('initial'); // initial, fetching, parsing, ready, error, cors-blocked
+      const [loadingMessage, setLoadingMessage] = useState('');
+      const [chaptersData, setChaptersData] = useState(null);
+      const [wordCountData, setWordCountData] = useState(null);
+      const [showUpload, setShowUpload] = useState(false);
+      const [parsingProgress, setParsingProgress] = useState(0);
+      const [showWordCountUpload, setShowWordCountUpload] = useState(false);
+
+      const [selectedFormat, setSelectedFormat] = useState('webSerial');
+      const [selectedBook, setSelectedBook] = useState(null); // For audiobook filtering
+      const [searchTerm, setSearchTerm] = useState('');
+      const [selectedChapter, setSelectedChapter] = useState(null);
+      const [readingSpeed, setReadingSpeed] = useState('average'); // slow, average, fast
+      const [hoursPerDay, setHoursPerDay] = useState(2);
+
+      // Detect if user is on the very last chapter
+      const isOnLastChapter = useMemo(() => {
+        if (!selectedChapter || !chaptersData) return false;
+        return selectedChapter.originalIndex === chaptersData.chapters.length - 1;
+      }, [selectedChapter, chaptersData]);
+
+      const formatNames = {
+        webSerial: 'Web Serial',
+        audiobook: 'Audiobook',
+        ebook: 'Ebook'
+      };
+
+      // Load embedded data on mount
+      useEffect(() => {
+        const loadData = async () => {
+          try {
+            console.log('Loading chapters data from JSON file...');
+            const response = await fetch(CHAPTERS_URL);
+            if (!response.ok) {
+              throw new Error(`Failed to fetch chapters: ${response.status}`);
+            }
+            const data = await response.json();
+            setChaptersData(data);
+            setLoadingState('ready');
+            console.log(`Loaded ${data.chapters.length} chapters from JSON file`);
+
+            // Try to load word count data
+            loadWordCountData();
+          } catch (error) {
+            console.error('Error during initialization:', error);
+            setLoadingState('error');
+            setLoadingMessage('Failed to load chapter data. Please make sure wandering-inn-chapters.json is in the same directory.');
+            setShowUpload(true);
+          }
+        };
+
+        loadData();
+      }, []);
+
+      const loadWordCountData = async () => {
+        try {
+          const response = await fetch(WORDCOUNT_URL);
+
+          if (!response.ok) {
+            throw new Error(`Failed to fetch word count: ${response.status}`);
+          }
+
+          const data = await response.json();
+          const chapters = data.chapters || data;
+
+          // Convert to compact format immediately
+          const compactData = {};
+          if (Array.isArray(chapters)) {
+            chapters.forEach(entry => {
+              if (entry.chapter_name && entry.wordcount) {
+                compactData[entry.chapter_name] = entry.wordcount;
+              }
+            });
+          } else {
+            // Already in compact format
+            Object.assign(compactData, chapters);
+          }
+
+          setWordCountData(compactData);
+          console.log(`Loaded ${Object.keys(compactData).length} word count entries`);
+
+        } catch (error) {
+          console.error('Word count fetch error:', error);
+          setShowWordCountUpload(true);
+        }
+      };
+
+      const handleWordCountUpload = async (event) => {
+        const file = event.target.files[0];
+        if (!file) return;
+
+        try {
+          const jsonContent = await file.text();
+          const data = JSON.parse(jsonContent);
+
+          // Convert to compact format immediately
+          const compactData = {};
+          if (Array.isArray(data.chapters) || Array.isArray(data)) {
+            const chapters = data.chapters || data;
+            chapters.forEach(entry => {
+              if (entry.chapter_name && entry.wordcount) {
+                compactData[entry.chapter_name] = entry.wordcount;
+              }
+            });
+          } else {
+            // Already in compact format
+            Object.assign(compactData, data);
+          }
+
+          setWordCountData(compactData);
+          setShowWordCountUpload(false);
+          console.log(`Loaded ${Object.keys(compactData).length} word count entries from file`);
+        } catch (error) {
+          console.error('Word count file upload error:', error);
+          alert('Error reading word count file. Please make sure it\'s valid JSON.');
+        }
+      };
+
+      const loadTableOfContents = async () => {
+        try {
+          setLoadingState('fetching');
+          setLoadingMessage('Fetching table of contents from wanderinginn.com...');
+
+          const response = await fetch(TOC_URL);
+
+          if (!response.ok) {
+            throw new Error(`Failed to fetch: ${response.status}`);
+          }
+
+          const html = await response.text();
+          parseTableOfContents(html);
+
+        } catch (error) {
+          console.error('Fetch error:', error);
+
+          // Check if it's a CORS error
+          if (error.message.includes('CORS') || error.message.includes('Failed to fetch')) {
+            setLoadingState('cors-blocked');
+            setShowUpload(true);
+            setLoadingMessage('Unable to fetch due to CORS restrictions. Please upload a saved copy of the page.');
+          } else {
+            setLoadingState('error');
+            setLoadingMessage(`Error: ${error.message}`);
+            setShowUpload(true);
+          }
+        }
+      };
+
+      const parseTableOfContents = (htmlContent) => {
+        setLoadingState('parsing');
+        setLoadingMessage('Parsing HTML structure...');
+        setParsingProgress(10);
+
+        try {
+          // Create a temporary DOM to parse the HTML
+          const parser = new DOMParser();
+          const doc = parser.parseFromString(htmlContent, 'text/html');
+
+          setLoadingMessage('Finding table of contents...');
+          setParsingProgress(20);
+
+          const volumes = [];
+          const books = [];
+          const chapters = [];
+
+          let currentVolume = -1;
+          let currentBook = -1;
+          let volumeMap = {}; // Track volume names to indices
+          let bookMap = {}; // Track book names to indices
+
+          // Try to find the TOC container
+          const tocContainer = doc.querySelector('#table-of-contents, .table-of-contents, main, body');
+          if (!tocContainer) {
+            throw new Error('Could not find table of contents container in HTML');
+          }
+
+          setLoadingMessage('Extracting chapters...');
+          setParsingProgress(30);
+
+          // Look for volume wrappers
+          const volumeWrappers = tocContainer.querySelectorAll('[id^="vol-"], .volume-wrapper, .volume');
+
+          if (volumeWrappers.length > 0) {
+            // Div-based structure with volume wrappers
+            console.log(`Found ${volumeWrappers.length} volume wrappers`);
+
+            volumeWrappers.forEach((volumeWrapper, volIdx) => {
+              try {
+                // Extract volume name
+                const volumeHeading = volumeWrapper.querySelector('h2, h3, .volume-title, [class*="volume-name"]');
+                let volumeName = volumeHeading?.textContent.trim() || `Volume ${volIdx + 1}`;
+
+                if (!volumeMap[volumeName]) {
+                  volumeMap[volumeName] = volumes.length;
+                  volumes.push(volumeName);
+                  currentVolume = volumeMap[volumeName];
+                } else {
+                  currentVolume = volumeMap[volumeName];
+                }
+
+                // Look for book sections within volume
+                const bookWrappers = volumeWrapper.querySelectorAll('.book-wrapper');
+
+                if (bookWrappers.length > 0) {
+                  bookWrappers.forEach((bookWrapper, bookIdx) => {
+                    try {
+                      // Extract book name from the header
+                      const bookTitleElement = bookWrapper.querySelector('.head-book-title, .book-title');
+                      let bookName = '';
+
+                      if (bookTitleElement) {
+                        // Get the book number and title
+                        const bookNum = bookTitleElement.querySelector('.book-title-num, a')?.textContent.trim() || '';
+                        const bookTitle = bookTitleElement.querySelector('.book-title-text')?.textContent.trim() || '';
+                        // Add proper spacing: "Book 1" + " - " + "The Wandering Inn"
+                        if (bookNum && bookTitle) {
+                          bookName = `${bookNum} -${bookTitle}`;
+                        } else {
+                          bookName = bookNum || bookTitle;
+                        }
+                      }
+
+                      // Fallback if no book name found
+                      if (!bookName) {
+                        bookName = `Book ${books.length + 1}`;
+                      }
+
+                      if (!bookMap[bookName]) {
+                        bookMap[bookName] = books.length;
+                        books.push(bookName);
+                        currentBook = bookMap[bookName];
+                      } else {
+                        currentBook = bookMap[bookName];
+                      }
+
+                      // Extract chapters from this book's body
+                      const bookBody = bookWrapper.querySelector('.book-body');
+                      if (bookBody) {
+                        extractChaptersFromElement(bookBody, currentVolume, currentBook, chapters);
+                      }
+                    } catch (bookError) {
+                      console.error('Error processing book wrapper:', bookError);
+                    }
+                  });
+                } else {
+                  // No book sections, extract chapters directly from volume
+                  if (currentBook === -1) {
+                    currentBook = 0;
+                    if (books.length === 0) books.push(`Book ${books.length + 1}`);
+                  }
+                  extractChaptersFromElement(volumeWrapper, currentVolume, currentBook, chapters);
+                }
+
+                setLoadingMessage(`Processed volume ${volIdx + 1} of ${volumeWrappers.length}...`);
+                setParsingProgress(30 + ((volIdx + 1) / volumeWrappers.length) * 60);
+              } catch (volumeError) {
+                console.error('Error processing volume wrapper:', volumeError);
+              }
+            });
+          } else {
+            // Try table-based structure
+            const table = tocContainer.querySelector('table');
+
+            if (table) {
+              console.log('Found table-based structure');
+              const rows = table.querySelectorAll('tr');
+
+              rows.forEach((row, rowIndex) => {
+                try {
+                  if (rowIndex % 50 === 0) {
+                    setLoadingMessage(`Processing row ${rowIndex} of ${rows.length}...`);
+                    setParsingProgress(30 + (rowIndex / rows.length) * 60);
+                  }
+
+                  // Check for volume/book headers
+                  const headerCell = row.querySelector('th');
+                  if (headerCell) {
+                    const headerText = headerCell.textContent.trim();
+
+                    if (headerText.match(/Volume\s+\d+/i)) {
+                      if (!volumeMap[headerText]) {
+                        volumeMap[headerText] = volumes.length;
+                        volumes.push(headerText);
+                      }
+                      currentVolume = volumeMap[headerText];
+                      return;
+                    }
+
+                    if (headerText.match(/Book\s+\d+/i)) {
+                      if (!bookMap[headerText]) {
+                        bookMap[headerText] = books.length;
+                        books.push(headerText);
+                      }
+                      currentBook = bookMap[headerText];
+                      return;
+                    }
+                  }
+
+                  // Extract chapter data from cells
+                  const cells = row.querySelectorAll('td');
+                  if (cells.length >= 3) {
+                    // Infer volume/book if not set
+                    if (currentVolume === -1) {
+                      currentVolume = 0;
+                      if (volumes.length === 0) volumes.push('Volume 1');
+                    }
+                    if (currentBook === -1) {
+                      currentBook = 0;
+                      if (books.length === 0) books.push('Book 1');
+                    }
+
+                    const wsText = cells[0]?.textContent.trim() || '';
+                    const abText = cells[1]?.textContent.trim() || '';
+                    const ebText = cells[2]?.textContent.trim() || '';
+
+                    // Skip header rows
+                    if (wsText.match(/web\s*serial/i) || wsText.match(/audiobook/i)) return;
+                    if (!wsText && !abText && !ebText) return;
+
+                    chapters.push({
+                      v: currentVolume,
+                      b: currentBook,
+                      ws: wsText || null,
+                      ab: abText || null,
+                      eb: ebText || null
+                    });
+                  }
+                } catch (rowError) {
+                  console.error('Error processing row:', rowError);
+                }
+              });
+            } else {
+              throw new Error('Could not find table or volume structure in HTML');
+            }
+          }
+
+          setLoadingMessage('Finalizing data...');
+          setParsingProgress(95);
+
+          // If we didn't find any volumes/books, create defaults
+          if (volumes.length === 0) volumes.push('Volume 1');
+          if (books.length === 0) books.push('Book 1');
+
+          if (chapters.length === 0) {
+            throw new Error('No chapters found in the HTML. Please check the file format.');
+          }
+
+          const parsedData = { volumes, books, chapters };
+
+          console.log('Parsed data:', parsedData);
+          console.log(`Found ${volumes.length} volumes, ${books.length} books, ${chapters.length} chapters`);
+
+          setChaptersData(parsedData);
+          setLoadingState('ready');
+          setLoadingMessage('');
+          setParsingProgress(100);
+
+        } catch (error) {
+          console.error('Parsing error:', error);
+          setLoadingState('error');
+          setLoadingMessage(`Error parsing HTML: ${error.message}`);
+          setShowUpload(true);
+        }
+      };
+
+      // Helper function to extract chapters from an element
+      const extractChaptersFromElement = (element, volumeIndex, bookIndex, chaptersArray) => {
+        if (!element) return;
+
+        // Look for chapter-entry divs (the actual structure used)
+        const chapterEntries = element.querySelectorAll('.chapter-entry');
+
+        if (chapterEntries.length > 0) {
+          chapterEntries.forEach(entry => {
+            try {
+              // Get the three possible columns
+              const wsCell = entry.querySelector('.body-web');
+              const abCell = entry.querySelector('.body-audiobook');
+              const ebCell = entry.querySelector('.body-ebook');
+
+              // Extract text content and handle <br> tags properly
+              const getChapterTexts = (cell) => {
+                if (!cell) return [null];
+
+                try {
+                  // Use innerHTML to preserve br tags, then split on them
+                  const html = cell.innerHTML.trim();
+                  if (!html) return [null];
+
+                  // Split by <br> tags (case insensitive, with or without attributes)
+                  const parts = html.split(/<br\s*\/?>/i);
+
+                  // Extract text from each part (removing HTML tags)
+                  const texts = parts
+                    .map(part => {
+                      // Remove any remaining HTML tags and decode entities
+                      const temp = document.createElement('div');
+                      temp.innerHTML = part;
+                      return temp.textContent.trim();
+                    })
+                    .filter(text => text && text.length > 0);
+
+                  return texts.length > 0 ? texts : [null];
+                } catch (e) {
+                  console.error('Error parsing chapter text:', e);
+                  return [null];
+                }
+              };
+
+              const wsTexts = getChapterTexts(wsCell);
+              const abTexts = getChapterTexts(abCell);
+              const ebTexts = getChapterTexts(ebCell);
+
+              // Create entries for all combinations
+              // The web serial chapter is the "anchor" - if multiple audiobook/ebook chapters
+              // map to one web serial chapter, we repeat the web serial chapter
+              const maxLength = Math.max(wsTexts.length, abTexts.length, ebTexts.length);
+
+              for (let i = 0; i < maxLength; i++) {
+                // For web serial, always use the first (or only) entry
+                const ws = wsTexts[0];
+                // For audiobook/ebook, use the indexed entry or null
+                const ab = abTexts[i] || null;
+                const eb = ebTexts[i] || null;
+
+                // Skip if all are null
+                if (!ws && !ab && !eb) continue;
+
+                chaptersArray.push({
+                  v: volumeIndex,
+                  b: bookIndex,
+                  ws: ws,
+                  ab: ab,
+                  eb: eb
+                });
+              }
+            } catch (e) {
+              console.error('Error processing chapter entry:', e);
+            }
+          });
+        } else {
+          // Fallback: try table-based structure
+          const rows = element.querySelectorAll('tr');
+
+          rows.forEach(row => {
+            try {
+              const cells = row.querySelectorAll('td');
+              if (cells.length >= 3) {
+                const wsText = cells[0]?.textContent.trim() || '';
+                const abText = cells[1]?.textContent.trim() || '';
+                const ebText = cells[2]?.textContent.trim() || '';
+
+                // Skip empty or header rows
+                if (!wsText && !abText && !ebText) return;
+                if (wsText.match(/web\s*serial/i)) return;
+
+                chaptersArray.push({
+                  v: volumeIndex,
+                  b: bookIndex,
+                  ws: wsText || null,
+                  ab: abText || null,
+                  eb: ebText || null
+                });
+              }
+            } catch (e) {
+              console.error('Error processing table row:', e);
+            }
+          });
+        }
+      };
+
+      const handleFileUpload = async (event) => {
+        const file = event.target.files[0];
+        if (!file) return;
+
+        setLoadingState('parsing');
+        setLoadingMessage('Reading uploaded file...');
+
+        try {
+          const htmlContent = await file.text();
+          parseTableOfContents(htmlContent);
+        } catch (error) {
+          console.error('File upload error:', error);
+          setLoadingState('error');
+          setLoadingMessage(`Error reading file: ${error.message}`);
+        }
+      };
+
+      // Filter chapters based on search and format
+      const filteredChapters = useMemo(() => {
+        if (!chaptersData) return [];
+
+        const formatKey = selectedFormat === 'webSerial' ? 'ws' : selectedFormat === 'audiobook' ? 'ab' : 'eb';
+
+        return chaptersData.chapters
+          .map((chapter, index) => ({ ...chapter, originalIndex: index }))
+          .filter(chapter => chapter[formatKey] !== null)
+          // Filter by book if audiobook format and book is selected
+          .filter(chapter => {
+            if (selectedFormat === 'audiobook' && selectedBook !== null) {
+              return chapter.b === selectedBook;
+            }
+            return true;
+          })
+          .filter(chapter => {
+            if (!searchTerm) return true;
+            const title = chapter[formatKey].toLowerCase();
+            return title.includes(searchTerm.toLowerCase());
+          });
+      }, [chaptersData, selectedFormat, selectedBook, searchTerm]);
+
+      // Calculate stats for selected chapter
+      const stats = useMemo(() => {
+        if (!selectedChapter || !chaptersData) return null;
+
+        const webSerialCount = chaptersData.chapters.length;
+        const formatKey = selectedFormat === 'webSerial' ? 'ws' : selectedFormat === 'audiobook' ? 'ab' : 'eb';
+
+        // Preserve originalIndex when filtering
+        const currentFormatChapters = chaptersData.chapters
+          .map((ch, idx) => ({ ...ch, originalIndex: idx }))
+          .filter(ch => ch[formatKey] !== null);
+
+        const positionInWebSerial = selectedChapter.originalIndex + 1;
+        const remainingWebSerial = webSerialCount - positionInWebSerial;
+        const percentComplete = ((positionInWebSerial / webSerialCount) * 100).toFixed(1);
+
+        // Find position in the current format by looking at the filtered chapters
+        const positionInFormat = currentFormatChapters.findIndex(ch => {
+          return ch.originalIndex === selectedChapter.originalIndex;
+        }) + 1;
+
+        const remainingInFormat = currentFormatChapters.length - positionInFormat;
+        const formatPercentComplete = positionInFormat > 0 ? ((positionInFormat / currentFormatChapters.length) * 100).toFixed(1) : '0.0';
+
+        // Calculate remaining BOOKS (not chapters) for audiobook/ebook
+        let remainingBooks = 0;
+        let totalBooksInFormat = 0;
+
+        if (selectedFormat === 'audiobook' || selectedFormat === 'ebook') {
+          // Get unique book indices that have chapters in this format
+          const booksWithFormat = new Set();
+          chaptersData.chapters.forEach(ch => {
+            if (ch[formatKey] !== null) {
+              booksWithFormat.add(ch.b);
+            }
+          });
+
+          totalBooksInFormat = booksWithFormat.size;
+
+          // Count how many books come after the current book
+          const currentBookIndex = selectedChapter.b;
+          remainingBooks = Array.from(booksWithFormat).filter(bookIdx => bookIdx > currentBookIndex).length;
+        }
+
+        // Word count calculations
+        let wordsRead = 0;
+        let totalWords = 0;
+        let remainingWords = 0;
+        let hasWordCount = false;
+
+        if (wordCountData) {
+          // wordCountData is always in compact format: { "chapter_name": wordcount }
+
+          // Calculate total words in web serial
+          const countedWebSerialChapters = new Set();
+          chaptersData.chapters.forEach((chapter) => {
+            if (chapter.ws && wordCountData[chapter.ws] && !countedWebSerialChapters.has(chapter.ws)) {
+              totalWords += wordCountData[chapter.ws];
+              countedWebSerialChapters.add(chapter.ws);
+            }
+          });
+
+          // Calculate words read based on the current format
+          const readWebSerialChapters = new Set();
+
+          if (selectedFormat === 'webSerial') {
+            // For web serial, count up to current position
+            for (let i = 0; i < positionInWebSerial; i++) {
+              const chapter = chaptersData.chapters[i];
+              if (chapter.ws && wordCountData[chapter.ws] && !readWebSerialChapters.has(chapter.ws)) {
+                wordsRead += wordCountData[chapter.ws];
+                readWebSerialChapters.add(chapter.ws);
+              }
+            }
+          } else {
+            // For audiobook/ebook: use the filtered format chapters up to current position
+            for (let i = 0; i < positionInFormat; i++) {
+              const formatChapter = currentFormatChapters[i];
+              const fullChapter = chaptersData.chapters[formatChapter.originalIndex];
+
+              // Get the web serial chapter name from the full chapter and look up word count
+              if (fullChapter.ws && wordCountData[fullChapter.ws] && !readWebSerialChapters.has(fullChapter.ws)) {
+                wordsRead += wordCountData[fullChapter.ws];
+                readWebSerialChapters.add(fullChapter.ws);
+              }
+            }
+          }
+
+          remainingWords = totalWords - wordsRead;
+          hasWordCount = totalWords > 0;
+        }
+
+        const wordPercentComplete = hasWordCount ? ((wordsRead / totalWords) * 100).toFixed(1) : null;
+
+        return {
+          currentPosition: positionInWebSerial,
+          totalChapters: webSerialCount,
+          remaining: remainingWebSerial,
+          percentComplete,
+          currentPositionInFormat: positionInFormat,
+          currentFormatTotal: currentFormatChapters.length,
+          remainingInFormat,
+          formatPercentComplete,
+          remainingBooks,
+          totalBooksInFormat,
+          wordsRead,
+          totalWords,
+          remainingWords,
+          wordPercentComplete,
+          hasWordCount
+        };
+      }, [selectedChapter, chaptersData, selectedFormat, wordCountData]);
+
+      // Calculate reading time for remaining content
+      const readingTime = useMemo(() => {
+        if (!stats || !stats.hasWordCount) return null;
+
+        // Reading speeds: slow = 200wpm, average = 300wpm, fast = 400wpm
+        const speedMap = {
+          slow: 200,
+          average: 300,
+          fast: 400
+        };
+        const wordsPerMinute = speedMap[readingSpeed] || 300;
+
+        const remainingMinutes = Math.ceil(stats.remainingWords / wordsPerMinute);
+        const remainingHours = Math.floor(remainingMinutes / 60);
+        const remainingMins = remainingMinutes % 60;
+
+        const totalMinutes = Math.ceil(stats.totalWords / wordsPerMinute);
+        const totalHours = Math.floor(totalMinutes / 60);
+        const totalMins = totalMinutes % 60;
+
+        const readMinutes = Math.ceil(stats.wordsRead / wordsPerMinute);
+        const readHours = Math.floor(readMinutes / 60);
+        const readMins = readMinutes % 60;
+
+        // Calculate completion date based on hours per day
+        let completionDate = null;
+        if (hoursPerDay > 0 && remainingMinutes > 0) {
+          const daysToComplete = Math.ceil((remainingMinutes / 60) / hoursPerDay);
+          completionDate = new Date();
+          completionDate.setDate(completionDate.getDate() + daysToComplete);
+        }
+
+        return {
+          remaining: { hours: remainingHours, minutes: remainingMins, total: remainingMinutes },
+          total: { hours: totalHours, minutes: totalMins, total: totalMinutes },
+          read: { hours: readHours, minutes: readMins, total: readMinutes },
+          completionDate,
+          wpm: wordsPerMinute
+        };
+      }, [stats, readingSpeed, hoursPerDay]);
+
+      // Get cross-format equivalents
+      const crossFormat = useMemo(() => {
+        if (!selectedChapter || !chaptersData) return null;
+
+        const chapter = chaptersData.chapters[selectedChapter.originalIndex];
+
+        // Calculate how far ahead of audiobook/ebook
+        let audiobookGap = null;
+        let ebookGap = null;
+
+        if (!chapter.ab) {
+          // Find the last chapter with an audiobook
+          let lastAudiobookIndex = -1;
+          for (let i = selectedChapter.originalIndex - 1; i >= 0; i--) {
+            if (chaptersData.chapters[i].ab) {
+              lastAudiobookIndex = i;
+              break;
+            }
+          }
+
+          if (lastAudiobookIndex >= 0) {
+            const chaptersAhead = selectedChapter.originalIndex - lastAudiobookIndex;
+
+            // Calculate words ahead if word count data available
+            let wordsAhead = 0;
+            if (wordCountData) {
+              // Track web serial chapters we've already counted to avoid duplicates
+              const countedChapters = new Set();
+
+              for (let i = lastAudiobookIndex + 1; i <= selectedChapter.originalIndex; i++) {
+                const ch = chaptersData.chapters[i];
+                if (ch.ws && wordCountData[ch.ws] && !countedChapters.has(ch.ws)) {
+                  wordsAhead += wordCountData[ch.ws];
+                  countedChapters.add(ch.ws);
+                }
+              }
+            }
+
+            audiobookGap = { chapters: chaptersAhead, words: wordsAhead };
+          }
+        }
+
+        if (!chapter.eb) {
+          // Find the last chapter with an ebook
+          let lastEbookIndex = -1;
+          for (let i = selectedChapter.originalIndex - 1; i >= 0; i--) {
+            if (chaptersData.chapters[i].eb) {
+              lastEbookIndex = i;
+              break;
+            }
+          }
+
+          if (lastEbookIndex >= 0) {
+            const chaptersAhead = selectedChapter.originalIndex - lastEbookIndex;
+
+            // Calculate words ahead if word count data available
+            let wordsAhead = 0;
+            if (wordCountData) {
+              // Track web serial chapters we've already counted to avoid duplicates
+              const countedChapters = new Set();
+
+              for (let i = lastEbookIndex + 1; i <= selectedChapter.originalIndex; i++) {
+                const ch = chaptersData.chapters[i];
+                if (ch.ws && wordCountData[ch.ws] && !countedChapters.has(ch.ws)) {
+                  wordsAhead += wordCountData[ch.ws];
+                  countedChapters.add(ch.ws);
+                }
+              }
+            }
+
+            ebookGap = { chapters: chaptersAhead, words: wordsAhead };
+          }
+        }
+
+        return {
+          webSerial: chapter.ws ? { title: chapter.ws } : null,
+          audiobook: chapter.ab ? { title: chapter.ab } : null,
+          ebook: chapter.eb ? { title: chapter.eb } : null,
+          audiobookGap,
+          ebookGap
+        };
+      }, [selectedChapter, chaptersData, wordCountData]);
+
+      // Loading screen
+      if (loadingState !== 'ready') {
+        return (
+          <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-amber-900 p-4 md:p-6 flex items-center justify-center">
+            <div className="max-w-2xl w-full bg-slate-800/80 border border-amber-600/40 rounded-lg shadow-2xl p-8 backdrop-blur-sm">
+              <div className="text-center">
+                <div className="w-16 h-16 text-5xl mx-auto mb-6">📖</div>
+                <h1 className="text-3xl font-bold text-amber-400 mb-2">The Wandering Inn</h1>
+                <p className="text-xl text-amber-200/80 mb-6">Progress Tracker</p>
+
+                {loadingState === 'initial' && (
+                  <div className="flex items-center justify-center gap-3 mb-4">
+                    <span className="text-2xl animate-spin">⏳</span>
+                    <p className="text-amber-200">Loading embedded chapter data...</p>
+                  </div>
+                )}
+
+                {loadingState === 'fetching' && (
+                  <div className="flex items-center justify-center gap-3 mb-4">
+                    <span className="text-2xl animate-spin">⏳</span>
+                    <p className="text-amber-200">{loadingMessage}</p>
+                  </div>
+                )}
+
+                {loadingState === 'parsing' && (
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-center gap-3 mb-2">
+                      <span className="text-2xl animate-spin">⏳</span>
+                      <p className="text-amber-200">{loadingMessage}</p>
+                    </div>
+                    <div className="w-full bg-slate-900/60 rounded-full h-3 overflow-hidden border border-slate-700">
+                      <div
+                        className="bg-gradient-to-r from-amber-600 to-amber-400 h-full transition-all duration-1000 ease-out"
+                        style={{ width: `${parsingProgress}%` }}
+                      ></div>
+                    </div>
+                    <p className="text-sm text-slate-400 text-center">Just a moment...</p>
+                  </div>
+                )}
+
+                {(loadingState === 'cors-blocked' || loadingState === 'error') && (
+                  <div className="space-y-6">
+                    <div className="flex items-start gap-3 p-4 bg-amber-900/30 border border-amber-600/40 rounded-lg">
+                      <span className="text-2xl">⚠️</span>
+                      <div className="text-left">
+                        <p className="text-amber-200 font-semibold mb-1">Need Your Help!</p>
+                        <p className="text-sm text-amber-300/90">{loadingMessage}</p>
+                      </div>
+                    </div>
+
+                    {showUpload && (
+                      <div className="space-y-4">
+                        <div className="text-left p-4 bg-slate-900/50 rounded-lg border border-slate-700">
+                          <p className="text-amber-300 font-semibold mb-2">Quick steps:</p>
+                          <ol className="text-sm text-slate-300 space-y-1 list-decimal list-inside">
+                            <li>Visit: <a href={TOC_URL} target="_blank" rel="noopener noreferrer" className="text-amber-400 hover:text-amber-300 underline break-all">{TOC_URL}</a></li>
+                            <li>Save the page (Ctrl+S or Cmd+S)</li>
+                            <li>Upload it below!</li>
+                          </ol>
+                        </div>
+
+                        <label className="flex flex-col items-center gap-3 p-6 bg-slate-900/60 border-2 border-dashed border-amber-600/50 rounded-lg cursor-pointer hover:border-amber-500 hover:bg-slate-900/80 transition-all">
+                          <span className="text-5xl">📤</span>
+                          <span className="text-amber-300 font-semibold">Upload Table of Contents</span>
+                          <span className="text-sm text-slate-400">HTML file</span>
+                          <input
+                            type="file"
+                            accept=".html,.htm"
+                            onChange={handleFileUpload}
+                            className="hidden"
+                          />
+                        </label>
+
+                        <button
+                          onClick={loadTableOfContents}
+                          className="w-full px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white font-semibold rounded-lg transition-colors"
+                        >
+                          Try Again
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      // Main UI (only shown when data is loaded)
+      return (
+        <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-amber-900 p-2 md:p-6">
+          <div className="max-w-4xl mx-auto space-y-4 md:space-y-6">
+            {/* Header */}
+            <div className="text-center py-4 md:py-6 relative z-10">
+              <h1 className="text-3xl md:text-5xl font-bold text-amber-400 mb-2 drop-shadow-lg">The Wandering Inn</h1>
+              <p className="text-lg md:text-xl text-amber-200/80">Where are you in your journey?</p>
+            </div>
+
+            {/* Search Bar with Format Selector */}
+            <div className="bg-slate-800/60 border border-amber-600/40 rounded-lg shadow-xl p-4 md:p-6 backdrop-blur-sm relative z-10">
+              <div className="flex gap-3 flex-wrap">
+                {/* Format Dropdown */}
+                <div className="relative">
+                  <select
+                    value={selectedFormat}
+                    onChange={(e) => {
+                      setSelectedFormat(e.target.value);
+                      // Reset book selection when changing format
+                      if (e.target.value !== 'audiobook') {
+                        setSelectedBook(null);
+                      }
+                    }}
+                    className="h-full px-4 py-3 bg-slate-900/60 border border-slate-600 rounded-lg text-amber-100 focus:outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-500/50 cursor-pointer appearance-none pr-10"
+                    style={{ minWidth: '140px' }}
+                  >
+                    <option value="webSerial">📖 Web Serial</option>
+                    <option value="audiobook">🎧 Audiobook</option>
+                    <option value="ebook">📚 Ebook</option>
+                  </select>
+                  <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-amber-400">
+                    ▼
+                  </div>
+                </div>
+
+                {/* Book Dropdown (only for Audiobook) */}
+                {selectedFormat === 'audiobook' && chaptersData && (
+                  <div className="relative">
+                    <select
+                      value={selectedBook !== null ? selectedBook : ''}
+                      onChange={(e) => setSelectedBook(e.target.value === '' ? null : parseInt(e.target.value))}
+                      className="h-full px-4 py-3 bg-slate-900/60 border border-slate-600 rounded-lg text-amber-100 focus:outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-500/50 cursor-pointer appearance-none pr-10"
+                      style={{ minWidth: '180px' }}
+                    >
+                      <option value="">All Books</option>
+                      {chaptersData.books.map((book, idx) => {
+                        // Check if this book has any audiobook chapters
+                        const hasAudiobookChapters = chaptersData.chapters.some(ch => ch.b === idx && ch.ab !== null);
+                        // Only show books that have audiobook chapters
+                        if (!hasAudiobookChapters) return null;
+                        return <option key={idx} value={idx}>{book}</option>;
+                      })}
+                    </select>
+                    <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-amber-400">
+                      ▼
+                    </div>
+                  </div>
+                )}
+
+                {/* Search Input */}
+                <div className="relative flex-1" style={{ minWidth: '200px' }}>
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xl">🔍</span>
+                  <input
+                    type="text"
+                    placeholder="Which chapter are you on? (e.g., '10.24', 'Interlude')..."
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    className="w-full pl-10 pr-4 py-3 bg-slate-900/60 border border-slate-600 rounded-lg text-amber-100 placeholder-slate-500 focus:outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-500/50"
+                  />
+                </div>
+              </div>
+
+              {/* Search Results */}
+              {searchTerm && (
+                <div className="mt-4 max-h-64 overflow-y-auto space-y-2">
+                  {filteredChapters.length > 0 ? (
+                    filteredChapters.map((chapter, idx) => {
+                      const formatKey = selectedFormat === 'webSerial' ? 'ws' : selectedFormat === 'audiobook' ? 'ab' : 'eb';
+                      const title = chapter[formatKey];
+
+                      // Skip if this chapter doesn't have the selected format
+                      if (!title) return null;
+
+                      return (
+                        <button
+                          key={idx}
+                          onClick={() => {
+                            setSelectedChapter(chapter);
+                            setSearchTerm('');
+                          }}
+                          className="w-full text-left px-4 py-3 bg-slate-900/60 hover:bg-slate-700/60 border border-slate-700 hover:border-amber-500 rounded-lg transition-all"
+                        >
+                          <div className="flex items-center justify-between">
+                            <div className="flex-1">
+                              <p className="text-amber-200 font-semibold">{title}</p>
+                              <p className="text-xs text-slate-400">
+                                {chaptersData.volumes[chapter.v] || `Volume ${chapter.v + 1}`}
+                                {(() => {
+                                  const currentBookIndex = chapter.b;
+                                  // Check if this book number has ANY audiobook chapters
+                                  const bookHasAudiobook = chaptersData.chapters.some(ch => ch.b === currentBookIndex && ch.ab !== null);
+                                  if (bookHasAudiobook) {
+                                    return ` • ${chaptersData.books[currentBookIndex] || `Book ${currentBookIndex + 1}`}`;
+                                  }
+                                  return '';
+                                })()}
+                              </p>
+                            </div>
+                            <span className="text-xl">📜</span>
+                          </div>
+                        </button>
+                      );
+                    })
+                  ) : (
+                    <p className="text-center text-slate-400 py-4">Hmm, couldn't find "{searchTerm}". Try a different chapter number?</p>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Selected Chapter Info */}
+            {selectedChapter && stats && (
+              <div className="space-y-4">
+                {/* Celebration Hero for Last Chapter */}
+                {isOnLastChapter && (
+                  <div className="bg-gradient-to-br from-amber-600 via-orange-500 to-pink-600 border-2 border-amber-400 rounded-lg shadow-2xl p-8 md:p-12 text-center backdrop-blur-sm relative overflow-hidden">
+                    {/* Confetti Animation */}
+                    <style dangerouslySetInnerHTML={{__html: `
+                      @keyframes confetti-fall {
+                        0% {
+                          transform: translateY(-20px) rotateZ(0deg);
+                          opacity: 1;
+                        }
+                        100% {
+                          transform: translateY(100vh) rotateZ(720deg);
+                          opacity: 0;
+                        }
+                      }
+                      .confetti-piece {
+                        position: absolute;
+                        font-size: 1.5rem;
+                        animation: confetti-fall linear infinite;
+                        pointer-events: none;
+                      }
+                    `}} />
+
+                    <div className="absolute inset-0 pointer-events-none">
+                      {[...Array(50)].map((_, i) => (
+                        <div
+                          key={i}
+                          className="confetti-piece"
+                          style={{
+                            left: `${Math.random() * 100}%`,
+                            animationDelay: `${Math.random() * 3}s`,
+                            animationDuration: `${3 + Math.random() * 2}s`
+                          }}
+                        >
+                          {['🎉', '🎊', '⭐', '✨', '🌟', '💫'][Math.floor(Math.random() * 6)]}
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="relative z-10">
+                      <h2 className="text-3xl md:text-5xl font-bold text-white mb-4 drop-shadow-lg">
+                        🎉 You're All Caught Up! 🎉
+                      </h2>
+                      <p className="text-xl md:text-2xl text-white/90 mb-2">
+                        You've reached the latest chapter!
+                      </p>
+                      <p className="text-base md:text-lg text-white/80">
+                        You're part of the journey as it unfolds. ✨
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Chapter Header with Format Info */}
+                <div className="bg-slate-800/60 border border-amber-600/40 rounded-lg shadow-xl p-4 md:p-6 backdrop-blur-sm relative z-10">
+                  <div className="flex items-start gap-3 mb-4">
+                    <span className="text-3xl">📖</span>
+                    <div className="flex-1">
+                      <p className="text-sm text-amber-300/70 mb-2">You're reading:</p>
+                      <h2 className="text-xl md:text-2xl font-bold text-amber-300 mb-3">
+                        {selectedChapter[selectedFormat === 'webSerial' ? 'ws' : selectedFormat === 'audiobook' ? 'ab' : 'eb'] || 'Unknown Chapter'}
+                      </h2>
+                      <div className="flex flex-wrap items-center gap-2 text-sm text-amber-200/80">
+                        <span className="font-semibold">
+                          {selectedFormat === 'webSerial' ? '📖 Web Serial' :
+                           selectedFormat === 'audiobook' ? '🎧 Audiobook' :
+                           '📚 Ebook'}
+                        </span>
+                        <span className="text-slate-500">•</span>
+                        <span>{chaptersData.volumes[selectedChapter.v] || `Volume ${selectedChapter.v + 1}`}</span>
+                        {(() => {
+                          const currentBookIndex = selectedChapter.b;
+                          // Check if this book number has ANY audiobook chapters
+                          const bookHasAudiobook = chaptersData.chapters.some(ch => ch.b === currentBookIndex && ch.ab !== null);
+                          if (bookHasAudiobook) {
+                            return (
+                              <>
+                                <span className="text-slate-500">•</span>
+                                <span>{chaptersData.books[currentBookIndex] || `Book ${currentBookIndex + 1}`}</span>
+                              </>
+                            );
+                          }
+                          return null;
+                        })()}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Cross-Format Equivalents - 3 Column Layout */}
+                  {crossFormat && (
+                    <div className="pt-4 border-t border-slate-700/50">
+                      <p className="text-sm text-slate-400 mb-3">This chapter in other formats:</p>
+                      <div className="grid grid-cols-3 gap-2">
+                        {/* Web Serial */}
+                        <div className={`flex items-start gap-2 p-3 rounded border ${
+                          selectedFormat === 'webSerial'
+                            ? 'bg-amber-900/40 border-amber-700/50'
+                            : 'bg-slate-900/40 border-slate-700/30'
+                        }`}>
+                          <div className="flex-shrink-0 mt-0.5">
+                            {selectedFormat === 'webSerial' ? (
+                              <span className="text-amber-400 text-lg">✓</span>
+                            ) : (
+                              <span className="text-xl opacity-50">📖</span>
+                            )}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-xs font-semibold text-amber-200 mb-0.5">Web Serial</p>
+                            {crossFormat.webSerial && crossFormat.webSerial.title ? (
+                              <p className="text-xs text-amber-300/70 break-words">{crossFormat.webSerial.title}</p>
+                            ) : (
+                              <p className="text-xs text-slate-500">--</p>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Audiobook */}
+                        <div className={`flex items-start gap-2 p-3 rounded border ${
+                          selectedFormat === 'audiobook'
+                            ? 'bg-orange-900/40 border-orange-700/50'
+                            : 'bg-slate-900/40 border-slate-700/30'
+                        }`}>
+                          <div className="flex-shrink-0 mt-0.5">
+                            {selectedFormat === 'audiobook' ? (
+                              <span className="text-orange-400 text-lg">✓</span>
+                            ) : (
+                              <span className="text-xl opacity-50">🎧</span>
+                            )}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-xs font-semibold text-orange-200 mb-0.5">Audiobook</p>
+                            {crossFormat.audiobook && crossFormat.audiobook.title ? (
+                              <p className="text-xs text-orange-300/70 break-words">{crossFormat.audiobook.title}</p>
+                            ) : crossFormat.audiobookGap ? (
+                              <>
+                                <p className="text-xs text-orange-400/80">
+                                  {crossFormat.audiobookGap.chapters} chapter{crossFormat.audiobookGap.chapters !== 1 ? 's' : ''} ahead
+                                </p>
+                                {crossFormat.audiobookGap.words > 0 && (
+                                  <p className="text-xs text-orange-400/60">
+                                    ({crossFormat.audiobookGap.words.toLocaleString()} words)
+                                  </p>
+                                )}
+                              </>
+                            ) : (
+                              <p className="text-xs text-slate-500">--</p>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Ebook */}
+                        <div className={`flex items-start gap-2 p-3 rounded border ${
+                          selectedFormat === 'ebook'
+                            ? 'bg-green-900/40 border-green-700/50'
+                            : 'bg-slate-900/40 border-slate-700/30'
+                        }`}>
+                          <div className="flex-shrink-0 mt-0.5">
+                            {selectedFormat === 'ebook' ? (
+                              <span className="text-green-400 text-lg">✓</span>
+                            ) : (
+                              <span className="text-xl opacity-50">📚</span>
+                            )}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-xs font-semibold text-green-200 mb-0.5">Ebook</p>
+                            {crossFormat.ebook && crossFormat.ebook.title ? (
+                              <p className="text-xs text-green-300/70 break-words">{crossFormat.ebook.title}</p>
+                            ) : crossFormat.ebookGap ? (
+                              <>
+                                <p className="text-xs text-green-400/80">
+                                  {crossFormat.ebookGap.chapters} chapter{crossFormat.ebookGap.chapters !== 1 ? 's' : ''} ahead
+                                </p>
+                                {crossFormat.ebookGap.words > 0 && (
+                                  <p className="text-xs text-green-400/60">
+                                    ({crossFormat.ebookGap.words.toLocaleString()} words)
+                                  </p>
+                                )}
+                              </>
+                            ) : (
+                              <p className="text-xs text-slate-500">--</p>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Web Serial Progress */}
+                <div className="bg-slate-800/60 border border-amber-600/40 rounded-lg shadow-xl p-4 md:p-6 backdrop-blur-sm relative z-10">
+                  <h4 className="text-base md:text-lg font-semibold text-amber-300 mb-4">Your Reading Journey in Chapters</h4>
+
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                    <div className="bg-slate-900/60 rounded-lg p-3 border border-amber-700/30">
+                      <p className="text-xs text-amber-300 mb-1">Chapters read</p>
+                      <p className="text-xl md:text-2xl font-bold text-amber-100">{stats.currentPosition.toLocaleString()}</p>
+                    </div>
+                    <div className="bg-slate-900/60 rounded-lg p-3 border border-orange-700/30">
+                      <p className="text-xs text-orange-300 mb-1">Total chapters</p>
+                      <p className="text-xl md:text-2xl font-bold text-orange-100">{stats.totalChapters.toLocaleString()}</p>
+                    </div>
+                    <div className="bg-slate-900/60 rounded-lg p-3 border border-green-700/30">
+                      <p className="text-xs text-green-300 mb-1">Chapters left</p>
+                      <p className="text-xl md:text-2xl font-bold text-green-100">{stats.remaining.toLocaleString()}</p>
+                    </div>
+                    <div className="bg-slate-900/60 rounded-lg p-3 border border-emerald-700/30">
+                      <p className="text-xs text-emerald-300 mb-1">Percent finished</p>
+                      <p className="text-xl md:text-2xl font-bold text-emerald-100">{stats.percentComplete}%</p>
+                    </div>
+                  </div>
+
+                  {/* Progress Bar */}
+                  <div className="w-full bg-slate-900/60 rounded-full h-4 overflow-hidden border border-slate-700 mb-1">
+                    <div
+                      className="bg-gradient-to-r from-amber-600 via-orange-500 to-green-500 h-full transition-all duration-500"
+                      style={{ width: `${stats.percentComplete}%` }}
+                    ></div>
+                  </div>
+                  <p className="text-right text-xs text-amber-400/70 mb-4">{stats.percentComplete}% by chapter</p>
+
+                  <p className="text-sm text-slate-400 text-center italic">
+                    {parseFloat(stats.percentComplete) < 25 ? "Just getting started - you're in for a treat! 📖" :
+                     parseFloat(stats.percentComplete) < 50 ? "You're really getting into it now! 🌟" :
+                     parseFloat(stats.percentComplete) < 75 ? "Over halfway - the story just keeps getting better! ⭐" :
+                     parseFloat(stats.percentComplete) < 90 ? "So close to catching up! 🎯" :
+                     "You're almost there! 🎉"}
+                  </p>
+
+                  {/* Word Count Progress */}
+                  {stats.hasWordCount && (
+                    <div className="mt-6 pt-6 border-t border-slate-700">
+                      <h4 className="text-base md:text-lg font-semibold text-amber-300 mb-3">Your Reading Journey in Words</h4>
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+                        <div className="bg-slate-900/60 rounded-lg p-3 border border-purple-700/30">
+                          <p className="text-xs text-purple-300 mb-1">Words read</p>
+                          <p className="text-lg md:text-xl font-bold text-purple-100">{stats.wordsRead.toLocaleString()}</p>
+                        </div>
+                        <div className="bg-slate-900/60 rounded-lg p-3 border border-pink-700/30">
+                          <p className="text-xs text-pink-300 mb-1">Total words</p>
+                          <p className="text-lg md:text-xl font-bold text-pink-100">{stats.totalWords.toLocaleString()}</p>
+                        </div>
+                        <div className="bg-slate-900/60 rounded-lg p-3 border border-cyan-700/30">
+                          <p className="text-xs text-cyan-300 mb-1">Words left</p>
+                          <p className="text-lg md:text-xl font-bold text-cyan-100">{stats.remainingWords.toLocaleString()}</p>
+                        </div>
+                        <div className="bg-slate-900/60 rounded-lg p-3 border border-blue-700/30">
+                          <p className="text-xs text-blue-300 mb-1">Percent finished</p>
+                          <p className="text-lg md:text-xl font-bold text-blue-100">{stats.wordPercentComplete}%</p>
+                        </div>
+                      </div>
+                      <div className="w-full bg-slate-900/60 rounded-full h-4 overflow-hidden border border-slate-700 mb-1">
+                        <div
+                          className="bg-gradient-to-r from-purple-600 via-pink-500 to-cyan-500 h-full transition-all duration-500"
+                          style={{ width: `${stats.wordPercentComplete}%` }}
+                        ></div>
+                      </div>
+                      <p className="text-right text-xs text-purple-400/70">{stats.wordPercentComplete}% by word count</p>
+                      <p className="text-sm text-slate-400 mt-2 text-center italic">
+                        That's roughly {Math.floor(stats.wordsRead / 250).toLocaleString()} pages you've conquered!
+                        {stats.remainingWords > 0 && ` About ${Math.floor(stats.remainingWords / 250).toLocaleString()} pages to go.`}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Reading Time Progress */}
+                  {readingTime && (
+                    <div className="mt-6 pt-6 border-t border-slate-700">
+                      <h4 className="text-base md:text-lg font-semibold text-amber-300 mb-3">Your Reading Journey in Time</h4>
+
+                      {/* Reading Pace Controls */}
+                      <div className="flex flex-wrap gap-3 mb-4 p-3 bg-slate-900/40 rounded-lg border border-slate-700/50">
+                        <div className="flex items-center gap-2">
+                          <label className="text-xs text-slate-400">I read:</label>
+                          <select
+                            value={readingSpeed}
+                            onChange={(e) => setReadingSpeed(e.target.value)}
+                            className="px-2 py-1 bg-slate-800 border border-slate-600 rounded text-xs text-amber-200 focus:outline-none focus:border-amber-500"
+                          >
+                            <option value="slow">Slow</option>
+                            <option value="average">Average</option>
+                            <option value="fast">Fast</option>
+                          </select>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <label className="text-xs text-slate-400">I read</label>
+                          <input
+                            type="number"
+                            min="0.5"
+                            max="24"
+                            step="0.5"
+                            value={hoursPerDay}
+                            onChange={(e) => setHoursPerDay(parseFloat(e.target.value) || 1)}
+                            className="w-16 px-2 py-1 bg-slate-800 border border-slate-600 rounded text-xs text-amber-200 focus:outline-none focus:border-amber-500"
+                          />
+                          <label className="text-xs text-slate-400">hours / day</label>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+                        <div className="bg-slate-900/60 rounded-lg p-3 border border-indigo-700/30">
+                          <p className="text-xs text-indigo-300 mb-1">Time read</p>
+                          <p className="text-lg md:text-xl font-bold text-indigo-100">
+                            {readingTime.read.hours > 0 ? `${readingTime.read.hours.toLocaleString()}h ${readingTime.read.minutes}m` : `${readingTime.read.minutes}m`}
+                          </p>
+                        </div>
+                        <div className="bg-slate-900/60 rounded-lg p-3 border border-blue-700/30">
+                          <p className="text-xs text-blue-300 mb-1">Total time</p>
+                          <p className="text-lg md:text-xl font-bold text-blue-100">
+                            {readingTime.total.hours > 0 ? `${readingTime.total.hours.toLocaleString()}h ${readingTime.total.minutes}m` : `${readingTime.total.minutes}m`}
+                          </p>
+                        </div>
+                        <div className="bg-slate-900/60 rounded-lg p-3 border border-teal-700/30">
+                          <p className="text-xs text-teal-300 mb-1">Time left</p>
+                          <p className="text-lg md:text-xl font-bold text-teal-100">
+                            {readingTime.remaining.hours > 0 ? `${readingTime.remaining.hours.toLocaleString()}h ${readingTime.remaining.minutes}m` : `${readingTime.remaining.minutes}m`}
+                          </p>
+                        </div>
+                        <div className="bg-slate-900/60 rounded-lg p-3 border border-cyan-700/30">
+                          <p className="text-xs text-cyan-300 mb-1">Percent finished</p>
+                          <p className="text-lg md:text-xl font-bold text-cyan-100">
+                            {((readingTime.read.total / readingTime.total.total) * 100).toFixed(1)}%
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Time Progress Bar */}
+                      <div className="w-full bg-slate-900/60 rounded-full h-4 overflow-hidden border border-slate-700 mb-1">
+                        <div
+                          className="bg-gradient-to-r from-indigo-600 via-blue-500 to-teal-500 h-full transition-all duration-500"
+                          style={{ width: `${((readingTime.read.total / readingTime.total.total) * 100).toFixed(1)}%` }}
+                        ></div>
+                      </div>
+                      <p className="text-right text-xs text-indigo-400/70">
+                        {((readingTime.read.total / readingTime.total.total) * 100).toFixed(1)}% by reading time
+                      </p>
+
+                      {/* Completion Date */}
+                      {readingTime.completionDate && stats.remainingWords > 0 && (
+                        <div className="mt-4 text-center">
+                          <p className="text-sm font-semibold text-amber-300">
+                            📅 You'll finish around {readingTime.completionDate.toLocaleDateString('en-US', {
+                              weekday: 'long',
+                              month: 'long',
+                              day: 'numeric',
+                              year: 'numeric'
+                            })}
+                          </p>
+                          <p className="text-xs text-slate-400 mt-1">
+                            (Reading {hoursPerDay} hour{hoursPerDay !== 1 ? 's' : ''} per day at {readingTime.wpm.toLocaleString()} wpm)
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Current Format Progress (if not Web Serial) */}
+                {selectedFormat !== 'webSerial' && (
+                  <div className="bg-slate-800/60 border border-amber-600/40 rounded-lg shadow-xl p-4 md:p-6 backdrop-blur-sm">
+                    <h3 className="text-lg md:text-xl font-bold text-amber-400 mb-1">Your {formatNames[selectedFormat]} Journey</h3>
+                    <p className="text-sm text-amber-200/70 mb-4">Progress in this format</p>
+
+                    <div className="grid grid-cols-3 gap-3 md:gap-4 mb-4">
+                      <div className="bg-slate-900/60 border border-indigo-700/30 rounded-lg p-4">
+                        <p className="text-xs md:text-sm text-indigo-300 mb-1">Your position</p>
+                        <p className="text-xl md:text-2xl font-bold text-indigo-100">{stats.currentPositionInFormat} / {stats.currentFormatTotal}</p>
+                      </div>
+                      <div className="bg-slate-900/60 border border-teal-700/30 rounded-lg p-4">
+                        <p className="text-xs md:text-sm text-teal-300 mb-1">Still to enjoy</p>
+                        <p className="text-xl md:text-2xl font-bold text-teal-100">{stats.remainingInFormat}</p>
+                        <p className="text-xs text-slate-400 mt-1">more chapters</p>
+                      </div>
+                      <div className="bg-slate-900/60 border border-purple-700/30 rounded-lg p-4">
+                        <p className="text-xs md:text-sm text-purple-300 mb-1">Adventures remaining</p>
+                        <p className="text-xl md:text-2xl font-bold text-purple-100">{stats.remainingBooks}</p>
+                        <p className="text-xs text-slate-400 mt-1">more {selectedFormat === 'audiobook' ? 'audiobooks' : 'ebooks'}</p>
+                      </div>
+                    </div>
+
+                    <div className="w-full bg-slate-900/60 rounded-full h-4 overflow-hidden border border-slate-700">
+                      <div
+                        className="bg-gradient-to-r from-indigo-500 to-teal-500 h-full transition-all duration-500"
+                        style={{ width: `${stats.formatPercentComplete}%` }}
+                      ></div>
+                    </div>
+                    <p className="text-right text-xs md:text-sm text-amber-400/80 mt-2">{stats.formatPercentComplete}% complete in {formatNames[selectedFormat]}</p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {!selectedChapter && (
+              <div className="bg-slate-800/60 border border-amber-600/40 rounded-lg shadow-xl p-8 md:p-12 text-center backdrop-blur-sm relative z-10">
+                <div className="text-6xl mb-4">📖</div>
+                <p className="text-lg md:text-xl text-amber-200/80 mb-2">Ready to find your place in the story?</p>
+                <p className="text-sm md:text-base text-slate-400 mb-4">Search for your current chapter above!</p>
+                <p className="text-xs text-slate-500 mb-4">Try "1.00", "10.24", or "Interlude"</p>
+
+                {chaptersData && (
+                  <button
+                    onClick={() => {
+                      // Find chapter 1.00 in web serial
+                      const firstChapter = chaptersData.chapters
+                        .map((chapter, index) => ({ ...chapter, originalIndex: index }))
+                        .find(ch => ch.ws === '1.00' || ch.ws === '1.0');
+
+                      if (firstChapter) {
+                        setSelectedFormat('webSerial');
+                        setSelectedChapter(firstChapter);
+                      } else {
+                        // Fallback to first chapter if 1.00 not found
+                        const fallback = chaptersData.chapters[0];
+                        if (fallback) {
+                          setSelectedFormat('webSerial');
+                          setSelectedChapter({ ...fallback, originalIndex: 0 });
+                        }
+                      }
+                    }}
+                    className="text-xs text-amber-400/70 hover:text-amber-300 underline transition-colors"
+                  >
+                    I haven't started yet
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* Word Count Upload Option */}
+            {showWordCountUpload && (
+              <div className="bg-slate-800/60 border border-purple-600/40 rounded-lg shadow-xl p-4 md:p-6 backdrop-blur-sm relative z-10">
+                <div className="flex items-start gap-3 mb-3">
+                  <span className="text-2xl">📈</span>
+                  <div>
+                    <h3 className="text-lg font-bold text-purple-300 mb-1">Want to see word count too?</h3>
+                    <p className="text-sm text-slate-400 mb-3">Make sure wandering-inn-wordcount.json is in the same directory, or upload it below.</p>
+                  </div>
+                </div>
+                <div className="flex flex-col sm:flex-row gap-3">
+                  <label className="flex-1 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors text-center text-sm cursor-pointer">
+                    Upload JSON File
+                    <input
+                      type="file"
+                      accept=".json"
+                      onChange={handleWordCountUpload}
+                      className="hidden"
+                    />
+                  </label>
+                </div>
+              </div>
+            )}
+
+            {/* Footer */}
+            <footer className="mt-12 pb-8 text-center relative z-10">
+              <div className="bg-slate-800/40 border border-amber-600/20 rounded-lg p-6 backdrop-blur-sm">
+                <p className="text-amber-300 font-semibold mb-4">Helpful Links</p>
+                <div className="flex flex-wrap justify-center gap-4 text-sm">
+                  <a
+                    href="https://wanderinginn.com"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-amber-400 hover:text-amber-300 underline transition-colors"
+                  >
+                    📖 The Wandering Inn
+                  </a>
+                  <span className="text-slate-600">•</span>
+                  <a
+                    href="https://innwords.pallandor.com"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-amber-400 hover:text-amber-300 underline transition-colors"
+                  >
+                    📊 Word Count Tracker
+                  </a>
+                  <span className="text-slate-600">•</span>
+                  <a
+                    href="https://github.com/nyclitrpg/wanderinginn"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-amber-400 hover:text-amber-300 underline transition-colors"
+                  >
+                    💻 GitHub Repo
+                  </a>
+                </div>
+                <p className="text-slate-500 text-xs mt-4">
+                  Made with ❤️ for the Inn's readers
+                </p>
+              </div>
+            </footer>
+          </div>
+        </div>
+      );
+    };
+
+    // Render the app
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<WanderingInnTracker />);
+  </script>
+</body>
+</html>
