@@ -1285,7 +1285,7 @@
                         </div>
                       </div>
 
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
                         <div className="bg-slate-900/60 rounded-lg p-3 border border-indigo-700/30">
                           <p className="text-xs text-indigo-300 mb-1">Time read</p>
                           <p className="text-lg md:text-xl font-bold text-indigo-100">
@@ -1304,24 +1304,7 @@
                             {readingTime.remaining.hours > 0 ? `${readingTime.remaining.hours.toLocaleString()}h ${readingTime.remaining.minutes}m` : `${readingTime.remaining.minutes}m`}
                           </p>
                         </div>
-                        <div className="bg-slate-900/60 rounded-lg p-3 border border-cyan-700/30">
-                          <p className="text-xs text-cyan-300 mb-1">Percent finished</p>
-                          <p className="text-lg md:text-xl font-bold text-cyan-100">
-                            {((readingTime.read.total / readingTime.total.total) * 100).toFixed(1)}%
-                          </p>
-                        </div>
                       </div>
-
-                      {/* Time Progress Bar */}
-                      <div className="w-full bg-slate-900/60 rounded-full h-4 overflow-hidden border border-slate-700 mb-1">
-                        <div
-                          className="bg-gradient-to-r from-indigo-600 via-blue-500 to-teal-500 h-full transition-all duration-500"
-                          style={{ width: `${((readingTime.read.total / readingTime.total.total) * 100).toFixed(1)}%` }}
-                        ></div>
-                      </div>
-                      <p className="text-right text-xs text-indigo-400/70">
-                        {((readingTime.read.total / readingTime.total.total) * 100).toFixed(1)}% by reading time
-                      </p>
 
                       {/* Completion Date */}
                       {readingTime.completionDate && stats.remainingWords > 0 && (
