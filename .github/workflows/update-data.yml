@@ -37,11 +37,11 @@ jobs:
       - name: Check for changes
         id: git-check
         run: |
-          if git diff --quiet; then
-            echo "No changes detected"
+          if git diff --quiet wandering-inn-chapters.json wandering-inn-wordcount.json; then
+            echo "No changes detected in data files"
             echo "changed=false" >> $GITHUB_OUTPUT
           else
-            echo "Changes detected"
+            echo "Changes detected in data files"
             echo "changed=true" >> $GITHUB_OUTPUT
           fi
       
